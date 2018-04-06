@@ -1,0 +1,234 @@
+#!/bin/bash
+trap 'detect_exit' 0 1 2 3 6
+
+export VCAP_KEY_NAME="marbles_tc_creds"
+export CHANNEL_ID="defaultchannel"
+export CHAINCODE_ID="marbles_sample"
+#export TIMESTAMP=$(date +%s)
+export APP_URL="unknown_yet"                    # we correct this later
+GIT_CC_HASH=$(git ls-tree --abbrev=12 HEAD ./chaincode/src/marbles | cut -d ' ' -f 3 | cut -f 1)
+GIT_HASH=$(git rev-parse HEAD)
+
+detect_exit()
+{
+  if [ "$COMPLETED_STEP" != "5" ]; then
+    printf "\n\n --- Uh oh something failed... ---\n"
+    if [ "$COMPLETED_STEP" == "4" ]; then
+      echo "The application failed to start, lets get the cf logs eh?"
+      cf logs $CF_APP --recent
+    fi
+    export COMPLETED_STEP="-1"
+    if [ "$API_HOST" != "" ]; then
+      update_status
+    fi
+  else
+    echo "Script completed successfully. =)"
+  fi
+}
+
+update_status()
+{
+  printf "\nUpdating Sample's Deployment Status - network id: '${NETWORK_ID}', app: '$CF_APP', status: '$COMPLETED_STEP'\n"
+  curl -X PUT -s -S\
+    "$API_HOST/api/v1/networks/$NETWORK_ID/sample/marbles" \
+    -H 'Cache-Control: no-cache' \
+    -H 'Content-Type: application/json' \
+    -u $API_KEY:$API_SECRET \
+    -d '{"app": "'"$CF_APP"'", "url": "'"$APP_URL"'", "completed_step": '$COMPLETED_STEP', "meta": { "commit_hash": "'"$GIT_HASH"'", "cc_hash": "'"$GIT_CC_HASH"'" } }' \
+    | ./jq '.' || true
+}
+
+# -----------------------------------------------------------
+# Install Things We Need
+# -----------------------------------------------------------
+printf "\n\nInstalling jq for json parsing\n"
+wget -O jq https://github.com/stedolan/jq/releases/download/jq-1.5/jq-linux64
+chmod +x jq
+
+# -----------------------------------------------------------
+# Test if everything we need is set
+# -----------------------------------------------------------
+printf "\n\n\n"
+echo " __  __               _      _             "
+echo "|  \/  |             | |    | |            "
+echo "| \  / |  __ _  _ __ | |__  | |  ___  ___  "
+echo "| |\/| | / _  || '__|| '_ \ | | / _ \/ __| "
+echo "| |  | || (_| || |   | |_) || ||  __/\__ \ "
+echo "|_|  |_| \__,_||_|   |_.__/ |_| \___||___/ "
+
+printf "\n\n --- Testing if the script has what it needs --- \n"
+export SCRIPT_ERROR="nope"
+if [ "$VCAP_KEY_NAME" == "" ]; then
+  echo "Error - bad script setup - VCAP_KEY_NAME was not provided (Bluemix service credential key name)"
+  export SCRIPT_ERROR="yep"
+fi
+if [ "$SERVICE_INSTANCE_NAME" == "" ]; then
+  echo "Error - bad script setup - SERVICE_INSTANCE_NAME was not provided (IBM Blockchain service instance name)"
+  export SCRIPT_ERROR="yep"
+fi
+if [ "$CF_APP" == "" ]; then
+  echo "Error - bad script setup - CF_APP was not provided (Marbles application name)"
+  export SCRIPT_ERROR="yep"
+fi
+if [ "$MSP_ID" == "" ]; then
+  echo "Error - bad script setup - MSP_ID was not provided (id of the org on the network to use)"
+  export SCRIPT_ERROR="yep"
+fi
+if [ "$SCRIPT_ERROR" == "yep" ]; then
+  exit 1
+else
+  echo "Using service instance name: '${SERVICE_INSTANCE_NAME}'"
+  echo "Deploying Marbles in region: ${CLOUD_REGION_ID}"
+  echo "Deploying Marbles as msp id: ${MSP_ID}"
+  echo "Deploying Marbles commit level: ${GIT_HASH}"
+  printf "\nAll good\n\n"
+fi
+
+# -----------------------------------------------------------
+# 1. Create service creds for the service instance
+# -----------------------------------------------------------
+printf "\n --- Creating service credentials for your IBM Blockchain Platform service ---\n"
+cf delete-service-key "${SERVICE_INSTANCE_NAME}" ${VCAP_KEY_NAME} -f || true               # remove an old key if it exists (stale)
+cf create-service-key "${SERVICE_INSTANCE_NAME}" ${VCAP_KEY_NAME}                          # create a new/updated key
+
+# -----------------------------------------------------------
+# Get service credentials into our file system (remove the first two lines from cf service-key output)
+# -----------------------------------------------------------
+printf "\n --- Getting service credentials ---\n"
+cf service-key "${SERVICE_INSTANCE_NAME}" ${VCAP_KEY_NAME} > ./config/temp.txt                # load the key
+tail -n +2 ./config/temp.txt > ./config/marbles_tc.json
+#cat ./config/marbles_tc.json -b             # uncomment this if you are okay with your service creds being logged
+export API_HOST="$(cat ./config/marbles_tc.json | jq '.'$MSP_ID'.url' -r)"    # use the msp id from the env var
+export API_KEY="$(cat ./config/marbles_tc.json | jq '.'$MSP_ID'.key' -r)"
+export API_SECRET="$(cat ./config/marbles_tc.json | jq '.'$MSP_ID'.secret' -r)"
+export NETWORK_ID="$(cat ./config/marbles_tc.json | jq '.'$MSP_ID'.network_id' -r)"
+echo "Using Network ID ${NETWORK_ID}, api host=$API_HOST, api key=$API_KEY"
+export COMPLETED_STEP="1"
+update_status
+
+# -----------------------------------------------------------
+# 2. Install the chaincode
+# -----------------------------------------------------------
+printf "\n\n --- Installing chaincode ---\n"
+echo "Chaincode ID: ${CHAINCODE_ID}"
+printf "Chaincode Version: ${GIT_CC_HASH}\n\n"
+INSTALL_RESP=$(curl -X POST \
+  "$API_HOST/api/v1/networks/$NETWORK_ID/chaincode/install" \
+  -H 'Cache-Control: no-cache' \
+  -H 'content-type: multipart/form-data;' \
+  -u $API_KEY:$API_SECRET\
+  -F 'files[]=@./chaincode/src/marbles/lib.go' \
+  -F 'files[]=@./chaincode/src/marbles/marbles.go' \
+  -F 'files[]=@./chaincode/src/marbles/read_ledger.go' \
+  -F 'files[]=@./chaincode/src/marbles/write_ledger.go' \
+  -F chaincode_id=$CHAINCODE_ID \
+  -F chaincode_version=$GIT_CC_HASH \
+  --connect-timeout 60 || true)
+printf "\nResp: $INSTALL_RESP\n"
+INSTALLED=$(echo "$INSTALL_RESP" | jq '.message' -r || true)    # parse the install response for the "message" field
+
+if [ "$INSTALLED" != "ok" ]; then
+  if [[ $INSTALL_RESP = *"exists))"* ]]; then                            # this is ok
+    echo "Chaincode is already installed, good to go"
+  else                                                                   # this is a problem
+    echo "Could not install the chaincode... check log above and your peer's logs"
+    exit 1;
+  fi
+else
+  echo "Install was successful, woo"                                     # this is ok
+fi
+
+export COMPLETED_STEP="2"
+update_status
+
+# -----------------------------------------------------------
+# 3. Instantiate the chaincode - repeat 3x if needed
+# -----------------------------------------------------------
+i=0
+while [[ "$INSTANTIATED" != "ok" && "$i" -lt "3" && $INSTANTIATE_RESP != *"version already exists for chaincode"* ]]
+do
+  printf "\n\n --- Instantiating chaincode on channel $CHANNEL_ID (attempt $[$i+1]) ---\n\n"
+  sleep $[$i*6+1]s
+  INSTANTIATE_RESP=$(curl -X POST \
+    "$API_HOST/api/v1/networks/$NETWORK_ID/channels/$CHANNEL_ID/chaincode/instantiate" \
+    -H 'Cache-Control: no-cache' \
+    -H 'Content-Type: application/json' \
+    -u $API_KEY:$API_SECRET \
+    -d '{"chaincode_id":"'"$CHAINCODE_ID"'", "chaincode_version":"'"$GIT_CC_HASH"'", "chaincode_arguments":"[\"12345\"]"}' \
+    --connect-timeout 180 || true)
+  printf "\nResp: $INSTANTIATE_RESP\n"
+  INSTANTIATED=$(echo "$INSTANTIATE_RESP" | jq '.message' -r || true)  # parse the instantiate response for the "message" field
+  i=$[$i+1]
+done
+
+if [ "$INSTANTIATED" != "ok" ]; then
+  if [[ $INSTANTIATE_RESP = *"version already exists for chaincode"* ]]; then   # this is ok
+    echo "Chaincode is already instantiated, good to go"
+  else                                                                          # this is a problem
+    echo "Could not instantiate the chaincode... check log above and your peer's logs"
+    exit 1;
+  fi
+else
+  echo "Instantiate was successful, congrats"                                   # this is ok
+fi
+
+export COMPLETED_STEP="3"
+update_status
+
+# -----------------------------------------------------------
+# 4. Get connection profile - repeat 3x in case of connection resets
+# -----------------------------------------------------------
+i=0
+while [[ "$CP_CHANNEL_ID" != "membership_valid" && "$i" -lt "3" ]]
+do
+  printf "\n\n --- Get the connection profile (attempt $[$i+1]) ---\n\n"
+  sleep $[$i*8+1]s
+  export CONNECTION_PROFILE=$(curl -X GET \
+            "$API_HOST/api/v1/networks/$NETWORK_ID/connection_profile" \
+            -H 'Content-Type: application/json' \
+            -u $API_KEY:$API_SECRET\
+            --connect-timeout 90)
+  CP_CHANNEL_ID=$(echo "$CONNECTION_PROFILE" | jq '.channels["'$CHANNEL_ID'"]["x-status"]' -r)
+  i=$[$i+1]
+done
+
+if [ "$CP_CHANNEL_ID" != "membership_valid" ]; then
+  echo "Error - Connection Profile does not look healthy. Channel '$CHANNEL_ID' does not exist"
+  exit 1;
+else
+  echo "Connection Profile looks great. Has channel '$CHANNEL_ID'"
+fi
+
+#echo "got connection profile $CONNECTION_PROFILE"      # uncomment if you are okay with logging your connection profile
+export COMPLETED_STEP="4"
+update_status
+
+# -----------------------------------------------------------
+# 5. Push application and Bind the service
+# -----------------------------------------------------------
+printf "\n --- Creating the Marbles application ---\n"
+cf push $CF_APP --no-start                            # don't start yet, wait for binding
+
+echo "Creating env variables for mables..."
+cf set-env $CF_APP CONNECTION_PROFILE "$CONNECTION_PROFILE" > /dev/null
+cf set-env $CF_APP CHAINCODE_ID $CHAINCODE_ID               # pass these to the app so we know which one to use
+cf set-env $CF_APP CHAINCODE_VERSION $GIT_CC_HASH
+cf set-env $CF_APP CHANNEL_ID $CHANNEL_ID
+cf set-env $CF_APP MSP_ID $MSP_ID
+export APP_URL=$(cf app $CF_APP | grep -Po "(?<=routes:)\s*\S*")
+
+printf "\n --- Binding the IBM Blockchain Platform service to Marbles ---\n"
+cf bind-service $CF_APP "${SERVICE_INSTANCE_NAME}" -c "{\"permissions\":\"read-only\"}"   # bind marbles to the service
+
+# -----------------------------------------------------------
+# Start her up
+# -----------------------------------------------------------
+printf "\n --- Starting Marbles ---\n"
+cf start $CF_APP
+
+# -----------------------------------------------------------
+# Update IBP that the application is alive
+# -----------------------------------------------------------
+export COMPLETED_STEP="5"
+update_status
+printf "\n\n --- We are done here. ---\n\n"

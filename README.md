@@ -1,4 +1,25 @@
-*Read this in other languages: [中国](README-cn.md).*
+# IBM Cloud Blockchain
+
+Repo which contains the web application which will be deployed to the IBM cloud on each push on master branch.
+
+## Cloud Links
+
+The following links are the most recently used ones to manage or interact with the cloud stack.
+
+| Description | Link |
+| --- | --- |
+| Resource Overview (Dashboard) | https://console.bluemix.net/dashboard/apps |
+| Cloud Monitor Interface of deployed network | https://ibmblockchain-starter.ng.bluemix.net/network/na9199df859144a4892744fba39fa2255/overview |
+| List of deployed toolchains | https://console.bluemix.net/devops/toolchains?env_id=ibm:yp:us-south |
+| Toolchain for our webapp | https://console.bluemix.net/devops/toolchains/f3a43aa5-708e-4a02-bda5-d415710f55f1?env_id=ibm:yp:us-south |
+| Delivery Pipeline | https://console.bluemix.net/devops/pipelines/a0c33a07-704e-4713-b3ea-e3b45ad8a148?env_id=ibm:yp:us-south |
+| Composer API Swagger Documentation | https://ibmblockchain-starter.ng.bluemix.net/api-docs/ |
+| Link to the deployed webapp | https://marbles-20180406063615584.mybluemix.net/home |
+
+
+Below the line is the original documentation of the cloned repo.
+--- 
+
 # Marbles Demo
 
 ## About Marbles

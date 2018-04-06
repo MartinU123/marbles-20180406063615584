@@ -63,6 +63,7 @@ type OwnerRelation struct {
 // Main
 // ============================================================================================================================
 func main() {
+	fmt.Printf("Started Main")
 	err := shim.Start(new(SimpleChaincode))
 	if err != nil {
 		fmt.Printf("Error starting Simple chaincode - %s", err)
